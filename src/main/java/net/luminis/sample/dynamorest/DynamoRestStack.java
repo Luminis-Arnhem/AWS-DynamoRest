@@ -1,4 +1,4 @@
-package com.myorg;
+package net.luminis.sample.dynamorest;
 
 import software.amazon.awscdk.core.Construct;
 import software.amazon.awscdk.core.Stack;
