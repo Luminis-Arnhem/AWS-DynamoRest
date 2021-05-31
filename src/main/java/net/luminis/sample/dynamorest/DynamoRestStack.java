@@ -3,14 +3,13 @@ package net.luminis.sample.dynamorest;
 import software.amazon.awscdk.core.Construct;
 import software.amazon.awscdk.core.Stack;
 import software.amazon.awscdk.core.StackProps;
-import software.amazon.awscdk.services.apigateway.AuthorizationType;
-import software.amazon.awscdk.services.apigateway.MethodOptions;
-import software.amazon.awscdk.services.apigateway.RestApiProps;
-import software.amazon.awscdk.services.dynamodb.Attribute;
-import software.amazon.awscdk.services.dynamodb.AttributeType;
-import software.amazon.awscdk.services.dynamodb.TableProps;
-import software.amazon.awsconstructs.services.apigatewaydynamodb.ApiGatewayToDynamoDB;
-import software.amazon.awsconstructs.services.apigatewaydynamodb.ApiGatewayToDynamoDBProps;
+import software.amazon.awscdk.services.apigateway.*;
+import software.amazon.awscdk.services.dynamodb.*;
+import software.amazon.awscdk.services.iam.*;
+
+import java.util.List;
+import java.util.Map;
+
 
 public class DynamoRestStack extends Stack {
     public DynamoRestStack(final Construct scope, final String id) {
@@ -20,12 +19,12 @@ public class DynamoRestStack extends Stack {
     public DynamoRestStack(final Construct scope, final String id, final StackProps props) {
         super(scope, id, props);
 
-        RestApiProps apiGatewayProps = RestApiProps.builder()
-                .restApiName("DynamoRest")
-                .defaultMethodOptions(MethodOptions.builder()
-                        .authorizationType(AuthorizationType.NONE)
+        RestApi dynamoRestApi = new RestApi(this, "DynamoRest", RestApiProps.builder()
+                .deployOptions(StageOptions.builder()
+                        .loggingLevel(MethodLoggingLevel.INFO)
                         .build())
-                .build();
+                .build());
+
 
         TableProps tableProps = TableProps.builder()
                 .partitionKey(Attribute.builder()
@@ -34,8 +33,21 @@ public class DynamoRestStack extends Stack {
                         .build())
                 .tableName("exerciseStats")
                 .build();
+        Table dynamoDbTable = new Table(this, "exerciseStats", tableProps);
+        String tableName = dynamoDbTable.getTableName();
 
-        String tableName = tableProps.getTableName();
+
+        Role role = new Role(this, "api-gateway-accesses-dynamodb-role", RoleProps.builder()
+                .assumedBy(new ServicePrincipal("apigateway.amazonaws.com"))
+                .build());
+        role.addToPolicy(new PolicyStatement(PolicyStatementProps.builder()
+                .actions(List.of("dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem"))
+                .effect(Effect.ALLOW)
+                .resources(List.of(dynamoDbTable.getTableArn()))
+                .build()));
+
+
+        // Define integration details for POST method (resource creation)
         String createRequestTemplate = "{\n" +
                 "    \"TableName\": \"" + tableName + "\",\n" +
                 "    \"Item\": {\n" +
@@ -48,6 +60,28 @@ public class DynamoRestStack extends Stack {
                 "    }\n" +
                 "}";
 
+        Integration createIntegration = AwsIntegration.Builder.create()
+                .action("PutItem")
+                .service("dynamodb")
+                .integrationHttpMethod("POST")
+                .options(IntegrationOptions.builder()
+                        .credentialsRole(role)
+                        .requestTemplates(Map.of("application/json", createRequestTemplate))
+                        .integrationResponses(List.of(IntegrationResponse.builder()
+                                .statusCode("200")
+                                .build()))
+                        .build())
+                .build();
+
+        IResource restApiRootResource = dynamoRestApi.getRoot();
+        restApiRootResource.addMethod("POST", createIntegration, MethodOptions.builder()
+                        .methodResponses(List.of(MethodResponse.builder()
+                                .statusCode("200")
+                                .build()))
+                        .build());
+
+
+        // Define integration details for PUT method (resource update)
         String updateRequestTemplate = "{\n" +
                 "    \"TableName\": \"" + tableName + "\",\n" +
                 "    \"Key\": {\n" +
@@ -64,16 +98,55 @@ public class DynamoRestStack extends Stack {
                 "    \"ReturnValues\": \"NONE\"\n" +
                 "}";
 
-        ApiGatewayToDynamoDBProps apiGatewayToDynamoDBProps = ApiGatewayToDynamoDBProps.builder()
-                .apiGatewayProps(apiGatewayProps)
-                .dynamoTableProps(tableProps)
-                .allowCreateOperation(true)
-                .createRequestTemplate(createRequestTemplate)
-                .allowUpdateOperation(true)
-                .updateRequestTemplate(updateRequestTemplate)
-                .allowReadOperation(true)
+        Integration updateIntegration = AwsIntegration.Builder.create()
+                .action("UpdateItem")
+                .service("dynamodb")
+                .integrationHttpMethod("POST")
+                .options(IntegrationOptions.builder()
+                        .credentialsRole(role)
+                        .requestTemplates(Map.of("application/json", updateRequestTemplate))
+                        .integrationResponses(List.of(IntegrationResponse.builder()
+                                .statusCode("200")
+                                .build()))
+                        .build())
                 .build();
 
-        ApiGatewayToDynamoDB apiGateway = new ApiGatewayToDynamoDB(this, "dynamogateway", apiGatewayToDynamoDBProps);
+        Resource documentResource = dynamoRestApi.getRoot().addResource("{id}");
+        documentResource.addMethod("PUT", updateIntegration, MethodOptions.builder()
+                .methodResponses(List.of(MethodResponse.builder()
+                        .statusCode("200")
+                        .build()))
+                .build());
+
+
+        // Define integration details for GET method (resource retrieval)
+        String getRequestTemplate = "{\n" +
+                " \"TableName\": \"" + tableName + "\",\n" +
+                " \"KeyConditionExpression\": \"id = :v1\",\n" +
+                "    \"ExpressionAttributeValues\": {\n" +
+                "        \":v1\": {\n" +
+                "            \"S\": \"$input.params('id')\"\n" +
+                "        }\n" +
+                "    }\n" +
+                "}";
+
+        Integration queryIntegration = AwsIntegration.Builder.create()
+                .action("Query")
+                .service("dynamodb")
+                .integrationHttpMethod("POST")
+                .options(IntegrationOptions.builder()
+                        .credentialsRole(role)
+                        .requestTemplates(Map.of("application/json", getRequestTemplate))
+                        .integrationResponses(List.of(IntegrationResponse.builder()
+                                .statusCode("200")
+                                .build()))
+                        .build())
+                .build();
+
+        documentResource.addMethod("GET", queryIntegration, MethodOptions.builder()
+                        .methodResponses(List.of(MethodResponse.builder()
+                                .statusCode("200")
+                                .build()))
+                        .build());
     }
 }
