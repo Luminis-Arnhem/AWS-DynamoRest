@@ -139,6 +139,9 @@ public class DynamoRestStack extends Stack {
                         .requestTemplates(Map.of("application/json", getRequestTemplate))
                         .integrationResponses(List.of(IntegrationResponse.builder()
                                 .statusCode("200")
+                                .responseTemplates(Map.of("application/json", "#set($inputRoot = $input.path('$'))\n" +
+                                                "#if(!$inputRoot.Items.isEmpty())$inputRoot.Items[0].content.S\n" +
+                                                "#end\n"))
                                 .build()))
                         .build())
                 .build();
